@@ -1432,3 +1432,60 @@ test('windowsHide defaults to true on Windows, is left alone elsewhere', () => {
 If the logic lives inline in a god-file (`main.ts`, `cli.py`,
 `gateway/run.py`) and extracting it feels disruptive: that's the actual
 signal to do the extraction, not to regex around it.
+
+---
+
+## Cursor Cloud specific instructions
+
+Durable, non-obvious notes for agents working in the Cursor Cloud VM. The
+startup update script already runs `uv sync --extra dev` (Python) and
+`npm install` (Node workspaces), so dependencies are ready — do not re-run
+installs unless you changed dependency files.
+
+### Environments
+
+- **Python agent core** — package manager is `uv` (installs to
+  `~/.local/bin`). The editable venv lives at `.venv/`; use `.venv/bin/hermes`,
+  `.venv/bin/python`, `.venv/bin/ruff`, `.venv/bin/ty`. The **`dev` extra is
+  required** (`uv sync --extra dev`) — without it `scripts/run_tests.sh` finds
+  no venv with pytest and errors out.
+- **Node surfaces** (TUI `ui-tui/`, web `web/`, desktop `apps/desktop/`,
+  `apps/shared/`) — npm **workspaces**; always `npm install` from the repo root
+  (per-surface dev commands are in the "TUI Architecture" / desktop sections).
+
+### Lint / test / build / run (already-documented commands)
+
+- **Tests:** `scripts/run_tests.sh [path]` (see the Testing section — never bare
+  `pytest`). Per-file subprocess isolation; a full run is large, so scope to a
+  dir/file while iterating.
+- **Lint:** `.venv/bin/ruff check <paths>`; typecheck with `.venv/bin/ty`.
+- **JS tests:** run vitest from the relevant workspace, e.g.
+  `cd apps/desktop && npx vitest run <file>`.
+
+### Running any agent surface needs one model credential
+
+`hermes`, `hermes --tui`, `hermes gateway`, etc. all require a model provider.
+This VM defaults to **OpenRouter**: `~/.hermes/config.yaml` sets
+`model.provider: openrouter` + `model.default: openrouter/free` (a zero-cost
+model), and an `OPENROUTER_API_KEY` secret is injected into the VM env. So
+`.venv/bin/hermes -z "..." --yolo` works out of the box. Switch models with
+`hermes model` or by editing `model.default` to any OpenRouter slug (e.g.
+`anthropic/claude-sonnet-4.5`); host-based key selection prefers
+`OPENROUTER_API_KEY` for openrouter.ai endpoints (`cli.py`).
+
+Config lives in `~/.hermes/` (per-profile `HERMES_HOME`), NOT in the repo.
+
+Credential-free fallback (no provider key): point Hermes at any local
+OpenAI-compatible endpoint via `model.provider: custom` + `model.base_url`
+(+ `OPENAI_API_KEY`). Gotcha: the CLI's main chat path **streams** via the
+OpenAI SDK, so a local/mock endpoint MUST speak SSE on
+`POST /v1/chat/completions` (emit `chat.completion.chunk` frames ending with
+`data: [DONE]`) — a plain JSON (non-stream) reply makes the CLI fail with
+"empty stream / malformed SSE".
+
+### `uv sync` prunes runtime-lazy deps
+
+Hermes lazy-installs some optional deps into `.venv` at first use
+(`tools/lazy_deps.py`). `uv sync` prunes anything not in `uv.lock` back out —
+this is expected (it converges to the locked baseline); those deps re-install
+on next use. Don't mistake the removals for a broken env.
