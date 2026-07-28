@@ -1465,26 +1465,23 @@ installs unless you changed dependency files.
 ### Running any agent surface needs one model credential
 
 `hermes`, `hermes --tui`, `hermes gateway`, etc. all require a model provider.
-No provider keys are present in the cloud VM by default. To run the agent
-end-to-end without a real key, point Hermes at any local OpenAI-compatible
-endpoint via `~/.hermes/config.yaml`:
-
-```yaml
-model:
-  default: <model-name>
-  provider: custom
-  base_url: http://127.0.0.1:<port>/v1
-  api_key: sk-local-test
-```
-
-Also set `OPENAI_API_KEY` (any non-empty value) in `~/.hermes/.env`. Gotcha:
-the CLI's main chat path **streams** via the OpenAI SDK, so a mock/local
-endpoint MUST speak SSE on `POST /v1/chat/completions` (emit
-`chat.completion.chunk` frames ending with `data: [DONE]`) — a plain JSON
-(non-stream) reply makes the CLI fail with "empty stream / malformed SSE".
-For a real setup, use `hermes model` / `hermes setup` instead.
+This VM defaults to **OpenRouter**: `~/.hermes/config.yaml` sets
+`model.provider: openrouter` + `model.default: openrouter/free` (a zero-cost
+model), and an `OPENROUTER_API_KEY` secret is injected into the VM env. So
+`.venv/bin/hermes -z "..." --yolo` works out of the box. Switch models with
+`hermes model` or by editing `model.default` to any OpenRouter slug (e.g.
+`anthropic/claude-sonnet-4.5`); host-based key selection prefers
+`OPENROUTER_API_KEY` for openrouter.ai endpoints (`cli.py`).
 
 Config lives in `~/.hermes/` (per-profile `HERMES_HOME`), NOT in the repo.
+
+Credential-free fallback (no provider key): point Hermes at any local
+OpenAI-compatible endpoint via `model.provider: custom` + `model.base_url`
+(+ `OPENAI_API_KEY`). Gotcha: the CLI's main chat path **streams** via the
+OpenAI SDK, so a local/mock endpoint MUST speak SSE on
+`POST /v1/chat/completions` (emit `chat.completion.chunk` frames ending with
+`data: [DONE]`) — a plain JSON (non-stream) reply makes the CLI fail with
+"empty stream / malformed SSE".
 
 ### `uv sync` prunes runtime-lazy deps
 
