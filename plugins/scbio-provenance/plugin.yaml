@@ -1,0 +1,6 @@
+name: scbio-provenance
+version: 0.1.0
+description: "Capture bypass file writes during scbio sessions into the project provenance store."
+author: Hermes Agent
+hooks:
+  - post_tool_call

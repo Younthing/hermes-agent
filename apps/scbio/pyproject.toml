@@ -1,0 +1,37 @@
+[project]
+name = "scbio"
+version = "0.1.0"
+description = "Single-cell analysis thin-slice app on Hermes runtime (provenance DAG + impact-tier reruns)"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "fastapi>=0.104.0,<1",
+  "uvicorn[standard]>=0.24.0,<1",
+  "pyyaml>=6.0,<7",
+  "pydantic>=2.0,<3",
+  "python-multipart>=0.0.9,<1",
+]
+
+[project.optional-dependencies]
+scanpy = [
+  "numpy>=1.26,<3",
+  "pandas>=2.0,<3",
+  "matplotlib>=3.8,<4",
+  "anndata>=0.10,<0.12",
+  "scanpy>=1.10,<2",
+]
+dev = [
+  "pytest>=8.0,<9",
+  "httpx>=0.28,<1",
+]
+
+[project.scripts]
+scbio = "backend.main:cli"
+scbio-run-stage = "scripts.run_stage:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*", "scbio_provenance*", "orchestrator*", "scripts*"]
