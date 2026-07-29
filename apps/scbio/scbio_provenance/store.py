@@ -461,6 +461,7 @@ class ProvenanceStore:
                 "step_id": manifest.step_id,
                 "skill": manifest.skill,
                 "checks": manifest.checks,
+                "inputs": [i.to_dict() for i in manifest.inputs],
                 "outputs": produced,
                 "compute_params": manifest.compute_params,
                 "presentation_params": manifest.presentation_params,

@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Background,
   Controls,
   MiniMap,
   ReactFlow,
+  useEdgesState,
+  useNodesState,
   type Edge,
   type Node,
 } from "@xyflow/react";
@@ -85,21 +87,20 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [hermes, setHermes] = useState<string>("");
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   const refreshList = useCallback(async () => {
     const r = await api.listProjects();
     setProjects(r.projects);
   }, []);
 
-  const refreshGraph = useCallback(
-    async (id: string, eventId?: number) => {
-      const g = await api.graph(id, eventId);
-      setGraph(g);
-      const t = await api.timeline(id);
-      setEvents(t.events);
-    },
-    [],
-  );
+  const refreshGraph = useCallback(async (id: string, eventId?: number) => {
+    const g = await api.graph(id, eventId);
+    setGraph(g);
+    const t = await api.timeline(id);
+    setEvents(t.events);
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -118,7 +119,21 @@ export default function App() {
     void refreshGraph(projectId, asOf).catch((e) => setErr(String(e)));
   }, [projectId, asOf, refreshGraph]);
 
-  const flow = useMemo(() => (graph ? toFlow(graph) : { nodes: [], edges: [] }), [graph]);
+  // Full replace of the React Flow graph on every snapshot — scrubbing
+  // backward must *delete* nodes that did not exist at time T (no leftovers).
+  useEffect(() => {
+    if (!graph) {
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
+    const flow = toFlow(graph);
+    setNodes(flow.nodes);
+    setEdges(flow.edges);
+    setSelected((prev) =>
+      prev && flow.nodes.some((n) => n.id === prev) ? prev : null,
+    );
+  }, [graph, setNodes, setEdges]);
 
   async function createAndPlan() {
     setBusy(true);
@@ -152,6 +167,9 @@ export default function App() {
     }
   }
 
+  const frameKey = `frame-${asOf ?? "live"}-${graph?.as_of_event_id ?? 0}-${nodes.length}`;
+  const historical = asOf != null;
+
   return (
     <div className="app">
       <header className="topbar">
@@ -180,14 +198,22 @@ export default function App() {
           Run all stages
         </button>
         <span className="muted mono">{hermes}</span>
+        {historical && (
+          <span className="status-pill status-running mono">
+            snapshot @ event #{asOf} · {nodes.length} nodes
+          </span>
+        )}
         {err && <span style={{ color: "var(--danger)" }}>{err}</span>}
       </header>
 
       <div className="main">
         <div className="graph-wrap">
           <ReactFlow
-            nodes={flow.nodes}
-            edges={flow.edges}
+            key={frameKey}
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
             fitView
             onNodeClick={(_, n) => setSelected(n.id)}
             proOptions={{ hideAttribution: true }}
@@ -206,11 +232,25 @@ export default function App() {
         <aside className="side">
           <h2>Node</h2>
           <div className="panel-body">
-            <NodeDetail projectId={projectId} nodeId={selected} onChanged={() => void refreshGraph(projectId)} />
+            <NodeDetail
+              projectId={projectId}
+              nodeId={selected}
+              onChanged={() => {
+                setAsOf(undefined);
+                void refreshGraph(projectId);
+              }}
+            />
             <AiEditPanel
               projectId={projectId}
-              logicalId={selected?.startsWith("art:") || selected?.startsWith("pipeline:") ? selected : null}
-              onDone={() => void refreshGraph(projectId)}
+              logicalId={
+                selected?.startsWith("art:") || selected?.startsWith("pipeline:")
+                  ? selected
+                  : null
+              }
+              onDone={() => {
+                setAsOf(undefined);
+                void refreshGraph(projectId);
+              }}
             />
           </div>
         </aside>

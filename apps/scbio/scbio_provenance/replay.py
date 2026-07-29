@@ -1,8 +1,14 @@
-"""Fold event log into a graph snapshot at time T (timeline scrubbing)."""
+"""Fold event log into a graph snapshot at time T (timeline scrubbing).
+
+Contract: the snapshot at event id T is the *exclusive* fold of all events
+with ``id <= T``. Nodes / edges / versions that only appear in later events
+MUST NOT be present. Scrubbing backward therefore removes (deletes from the
+frame) anything that had not been created yet — each timeline frame is a
+clean historical graph, not a dirty overlay on the live graph.
+"""
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List, Optional
 
 from .model import EventType, GraphSnapshot, NodeKind, NodeStatus
@@ -14,17 +20,14 @@ def replay_to(
     until_event_id: Optional[int] = None,
     until_ts: Optional[str] = None,
 ) -> GraphSnapshot:
-    """Rebuild graph state by folding events up to T.
-
-    For the thin slice we keep live tables as the source of truth for the
-    *latest* state, and for historical scrubbing we reconstruct a projected
-    view from the event log (nodes/edges/versions mentioned in events).
-    """
+    """Rebuild graph state by folding events up to T (clean snapshot)."""
     events = store.list_events(until_event_id=until_event_id, until_ts=until_ts)
     nodes: Dict[str, Dict[str, Any]] = {}
     edges: Dict[str, Dict[str, Any]] = {}
     versions: Dict[str, Dict[str, Any]] = {}
     edge_seq = 0
+    # Track which artifact versions are "current" as of T (latest created ≤ T)
+    latest_by_logical: Dict[str, str] = {}
 
     def ensure_node(nid: str, kind: str, label: str, **extra: Any) -> None:
         if nid not in nodes:
@@ -38,6 +41,12 @@ def replay_to(
         nodes[nid].update({k: v for k, v in extra.items() if k != "meta"})
         if "meta" in extra:
             nodes[nid]["meta"] = {**nodes[nid].get("meta", {}), **extra["meta"]}
+
+    def add_edge(kind: str, src: str, dst: str) -> None:
+        nonlocal edge_seq
+        edge_seq += 1
+        eid = f"replay_e_{edge_seq}"
+        edges[eid] = {"id": eid, "kind": kind, "src_id": src, "dst_id": dst}
 
     for ev in events:
         t = ev["type"]
@@ -60,6 +69,7 @@ def replay_to(
                     "kind": "pipeline",
                     "parent_version_id": p.get("parent_version_id"),
                 }
+                latest_by_logical["pipeline:main"] = p["version_id"]
 
         elif t == EventType.STEP_STARTED.value:
             sid = f"step:{p['step_id']}"
@@ -89,6 +99,20 @@ def replay_to(
                     "presentation_params": p.get("presentation_params", {}),
                 },
             )
+            # consumes: inputs known at finish time
+            for inp in p.get("inputs") or []:
+                logical = inp.get("logical_id")
+                if not logical:
+                    continue
+                ensure_node(
+                    logical,
+                    NodeKind.ARTIFACT.value,
+                    logical.split(":")[-1],
+                    status=NodeStatus.CLEAN.value,
+                    meta={"kind": inp.get("kind"), "path": inp.get("path")},
+                )
+                add_edge("consumes", logical, sid)
+
             for out in p.get("outputs") or []:
                 logical = out.get("logical_id")
                 if not logical:
@@ -98,16 +122,13 @@ def replay_to(
                     NodeKind.ARTIFACT.value,
                     logical.split(":")[-1],
                     status=NodeStatus.CLEAN.value,
-                    meta={"kind": out.get("kind"), "path": out.get("path")},
+                    meta={
+                        "kind": out.get("kind"),
+                        "path": out.get("path"),
+                        "latest_version_id": out.get("version_id"),
+                    },
                 )
-                edge_seq += 1
-                eid = f"replay_e_{edge_seq}"
-                edges[eid] = {
-                    "id": eid,
-                    "kind": "produces",
-                    "src_id": sid,
-                    "dst_id": logical,
-                }
+                add_edge("produces", sid, logical)
                 if out.get("version_id"):
                     versions[out["version_id"]] = {
                         "id": out["version_id"],
@@ -117,6 +138,7 @@ def replay_to(
                         "kind": out.get("kind", "other"),
                         "parent_version_id": out.get("parent_version_id"),
                     }
+                    latest_by_logical[logical] = out["version_id"]
 
         elif t == EventType.ARTIFACT_VERSION_CREATED.value:
             logical = p["logical_id"]
@@ -125,7 +147,11 @@ def replay_to(
                 NodeKind.ARTIFACT.value,
                 logical.split(":")[-1],
                 status=NodeStatus.CLEAN.value,
-                meta={"kind": p.get("kind"), "path": p.get("path")},
+                meta={
+                    "kind": p.get("kind"),
+                    "path": p.get("path"),
+                    "latest_version_id": p.get("version_id"),
+                },
             )
             versions[p["version_id"]] = {
                 "id": p["version_id"],
@@ -135,6 +161,7 @@ def replay_to(
                 "kind": p.get("kind", "other"),
                 "parent_version_id": p.get("parent_version_id"),
             }
+            latest_by_logical[logical] = p["version_id"]
 
         elif t == EventType.STATUS_SET.value:
             nid = p.get("node_id")
@@ -145,13 +172,9 @@ def replay_to(
             for nid in p.get("dirty_nodes") or []:
                 if nid in nodes:
                     nodes[nid]["status"] = NodeStatus.DIRTY.value
-                else:
-                    ensure_node(
-                        nid,
-                        NodeKind.STEP.value if nid.startswith("step:") else NodeKind.ARTIFACT.value,
-                        nid.split(":")[-1],
-                        status=NodeStatus.DIRTY.value,
-                    )
+                # Do NOT create nodes that only appear as dirty targets if they
+                # never existed yet — a dirty mark on a not-yet-created node is
+                # a no-op for historical frames.
 
         elif t in (EventType.MANUAL_EDIT.value, EventType.AI_EDIT.value):
             logical = p.get("logical_id")
@@ -161,7 +184,12 @@ def replay_to(
                     NodeKind.ARTIFACT.value,
                     logical.split(":")[-1],
                     status=NodeStatus.CLEAN.value,
-                    meta={"edit": t, "note": p.get("note", "")},
+                    meta={
+                        "edit": t,
+                        "note": p.get("note", ""),
+                        "kind": p.get("kind"),
+                        "latest_version_id": p.get("version_id"),
+                    },
                 )
                 if p.get("version_id"):
                     versions[p["version_id"]] = {
@@ -172,11 +200,19 @@ def replay_to(
                         "kind": p.get("kind", "doc"),
                         "parent_version_id": p.get("parent_version_id"),
                     }
+                    latest_by_logical[logical] = p["version_id"]
+
+    # Annotate nodes with as-of latest version when known
+    for logical, vid in latest_by_logical.items():
+        if logical in nodes:
+            nodes[logical].setdefault("meta", {})["latest_version_id"] = vid
 
     last = events[-1] if events else None
     return GraphSnapshot(
         nodes=list(nodes.values()),
         edges=list(edges.values()),
+        # Only versions created at or before T (already the case — we only
+        # inserted from folded events).
         artifact_versions=list(versions.values()),
         as_of_event_id=last["id"] if last else None,
         as_of_ts=last["ts"] if last else None,

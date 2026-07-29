@@ -103,6 +103,32 @@ def test_classify_change_tiers():
     assert classify_change(kind="data") == ImpactTier.T3
 
 
+def test_timeline_frames_are_clean_snapshots(project: ProvenanceStore):
+    """Scrubbing to T must omit nodes that only appear after T."""
+    orch = Orchestrator(project)
+    orch.ensure_pipeline()
+    orch.run_all()
+    events = project.list_events()
+    # Find the last event before cluster starts
+    before_cluster = None
+    for e in events:
+        if e["type"] == "step_started" and e["payload"].get("step_id") == "cluster":
+            break
+        before_cluster = e["id"]
+    assert before_cluster is not None
+    snap = replay_to(project, until_event_id=before_cluster)
+    ids = {n["id"] for n in snap.nodes}
+    assert "step:qc" in ids
+    assert "step:normalize" in ids
+    assert "step:cluster" not in ids
+    assert not any(i.startswith("art:cluster") or i == "art:umap_fig" for i in ids)
+
+    # Monotonic growth: later frame ⊇ earlier frame for step nodes that finished
+    earlier = replay_to(project, until_event_id=before_cluster)
+    later = replay_to(project, until_event_id=events[-1]["id"])
+    assert {n["id"] for n in earlier.nodes}.issubset({n["id"] for n in later.nodes})
+
+
 def test_ai_edit_branches_version(project: ProvenanceStore):
     orch = Orchestrator(project)
     orch.ensure_pipeline()

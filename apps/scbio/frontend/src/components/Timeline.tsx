@@ -27,6 +27,7 @@ export function Timeline({ events, asOf, onChange, onLive }: Props) {
       <div className="timeline-label">
         <span>
           Timeline · event #{current.id} · {current.summary}
+          {asOf != null ? " · historical snapshot (later nodes hidden)" : " · live"}
         </span>
         <span className="row">
           <button type="button" onClick={onLive} disabled={asOf == null}>
